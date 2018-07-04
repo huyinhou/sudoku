@@ -14,7 +14,12 @@ func main() {
 		fmt.Print(err)
 		return
 	}
-	for _, line := range data {
-		fmt.Println(line)
+	s, err := NewSudoku(data)
+	if err != nil {
+		fmt.Print(err)
+		return
 	}
+	s.Resolve()
+	fmt.Println(s.String())
+	fmt.Println(s.MaskString())
 }
