@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"math/bits"
 	"strings"
+
+	"github.com/golang/glog"
 )
 
 const (
@@ -105,7 +107,7 @@ func (s *Sudoku) init() error {
 }
 
 func (s *Sudoku) setMask(i, j int, bit uint, set bool) {
-	// fmt.Printf("setMask(%d, %d, %d, %v)\n", i, j, bit, set)
+	glog.V(6).Infof("setMask(%d, %d, %d, %v)\n", i, j, bit, set)
 	mask := BitMask(1) << bit
 	old := s.masks[i][j]
 	if s.rmask[i].IsSet(mask) {
@@ -284,7 +286,7 @@ func (tr *traverseResolver) traverseRow(r, b, e int) bool {
 	}
 	columns := tr.columns[r]
 	numbers := tr.numbers[r]
-	fmt.Printf("row %d range [%d, %d] numbers: %v\n", r, b, e, numbers)
+	glog.V(6).Infof("row %d range [%d, %d] numbers: %v\n", r, b, e, numbers)
 	for i := b; i < e; i++ {
 		c := columns[b] // 确定第b列应该填哪个数字
 		n := numbers[i]
@@ -294,7 +296,7 @@ func (tr *traverseResolver) traverseRow(r, b, e int) bool {
 		if tr.cmask[c].IsSet(m) || tr.bmask[block].IsSet(m) {
 			continue
 		}
-		fmt.Printf("number at[%d,%d]=%d, m=%s, cmask[%d]=%s, bmask[%d]=%s\n",
+		glog.V(6).Infof("number at[%d,%d]=%d, m=%s, cmask[%d]=%s, bmask[%d]=%s\n",
 			r, c, n, m.String(), c, tr.cmask[c].String(), block, tr.bmask[block].String())
 		tr.cmask[c].Set(m)
 		tr.bmask[block].Set(m)

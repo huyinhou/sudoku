@@ -3,6 +3,8 @@ package main
 import (
 	"flag"
 	"fmt"
+
+	"github.com/golang/glog"
 )
 
 func main() {
@@ -21,5 +23,5 @@ func main() {
 	}
 	s.Resolve()
 	fmt.Println(s.String())
-	fmt.Println(s.MaskString())
+	glog.V(6).Info(s.MaskString())
 }
