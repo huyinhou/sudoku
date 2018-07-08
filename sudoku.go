@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"math/bits"
 	"strings"
 )
 
@@ -25,24 +27,15 @@ func (m *BitMask) Clear(mask BitMask) {
 	*m &= ^mask
 }
 
-func (m *BitMask) OneBit() int {
-	i, j := 1, 9
-	m1, m2 := BitMask(1)<<1, BitMask(1)<<9
-	for i < j {
-		if !m.IsSet(m1) {
-			m1 = m1 << 1
-			i++
-			continue
+func (m *BitMask) OneBit() bool {
+	return bits.OnesCount16(uint16(*m)) == 1
+}
+
+func (m *BitMask) LowBit() int {
+	for i, mask := 1, BitMask(1)<<1; i <= 9; i, mask = i+1, mask<<1 {
+		if m.IsSet(mask) {
+			return i
 		}
-		if !m.IsSet(m2) {
-			m2 = m2 >> 1
-			j--
-			continue
-		}
-		break
-	}
-	if i == j {
-		return i
 	}
 	return 0
 }
@@ -60,13 +53,23 @@ func (m *BitMask) String() string {
 	return string(buf[:])
 }
 
+func getBlockByPos(i, j int) int {
+	return i/3*3 + j/3
+}
+
 type Sudoku struct {
-	data  [sudoRows][sudoCols]int
-	masks [sudoRows][sudoCols]BitMask
+	data   [sudoRows][sudoCols]int
+	masks  [sudoRows][sudoCols]BitMask // [row][col]BitMask	每个单元格中可以填入的数字
+	rmask  [sudoRows]BitMask           // 每一行已经使用的数字
+	cmask  [sudoCols]BitMask           // 每一列已经使用的数字
+	bmask  [9]BitMask                  // 每个block已经使用的数字
+	remain int
 }
 
 func NewSudoku(data [][]int) (*Sudoku, error) {
-	s := &Sudoku{}
+	s := &Sudoku{
+		remain: 81,
+	}
 	for i := 0; i < sudoRows; i++ {
 		for j := 0; j < sudoCols; j++ {
 			num := data[i][j]
@@ -92,6 +95,7 @@ func (s *Sudoku) init() error {
 	for i := 0; i < sudoRows; i++ {
 		for j := 0; j < sudoCols; j++ {
 			if s.data[i][j] > 0 {
+				s.remain--
 				s.masks[i][j] = 0
 				s.setMask(i, j, uint(s.data[i][j]), false)
 			}
@@ -101,9 +105,26 @@ func (s *Sudoku) init() error {
 }
 
 func (s *Sudoku) setMask(i, j int, bit uint, set bool) {
-	fmt.Printf("setMask(%d, %d, %d, %v)\n", i, j, bit, set)
+	// fmt.Printf("setMask(%d, %d, %d, %v)\n", i, j, bit, set)
 	mask := BitMask(1) << bit
 	old := s.masks[i][j]
+	if s.rmask[i].IsSet(mask) {
+		panic(fmt.Sprintf("invalid row %d mask bit %d at (%d, %d) = %s",
+			i, bit, i, j, s.rmask[i].String()))
+	}
+	s.rmask[i].Set(mask)
+	if s.cmask[j].IsSet(mask) {
+		panic(fmt.Sprintf("invalid col %d mask bit %d at (%d, %d) = %s",
+			j, bit, i, j, s.cmask[j].String()))
+	}
+	s.cmask[j].Set(mask)
+	block := getBlockByPos(i, j)
+	if s.bmask[block].IsSet(mask) {
+		panic(fmt.Sprintf("invalid block %d mask bit %d at (%d, %d) = %s",
+			block, bit, i, j, s.bmask[block].String()))
+	}
+	s.bmask[block].Set(mask)
+
 	// 行
 	s.setMaskBlock(i, i+1, 0, 9, mask, set)
 	// 列
@@ -111,6 +132,29 @@ func (s *Sudoku) setMask(i, j int, bit uint, set bool) {
 	// 块
 	s.setMaskBlock(i/3*3, (i+3)/3*3, j/3*3, (j+3)/3*3, mask, set)
 	s.masks[i][j] = old
+}
+
+func (s *Sudoku) newTraverseResolver() *traverseResolver {
+	tr := &traverseResolver{}
+	for r := 0; r < 9; r++ {
+		tr.bmask[r] = s.bmask[r]
+		tr.cmask[r] = s.cmask[r]
+		for n, m := 1, BitMask(1)<<1; n <= 9; n, m = n+1, m<<1 {
+			if !s.rmask[r].IsSet(m) {
+				tr.numbers[r] = append(tr.numbers[r], n)
+			}
+		}
+		for c := 0; c < 9; c++ {
+			if s.data[r][c] == 0 {
+				tr.columns[r] = append(tr.columns[r], c)
+			}
+		}
+		if len(tr.numbers[r]) != len(tr.columns[r]) {
+			panic(fmt.Sprintf("row %d state error, numbers: %v, columns: %v",
+				r, tr.numbers[r], tr.columns[r]))
+		}
+	}
+	return tr
 }
 
 func (s *Sudoku) setMaskBlock(rb, re, cb, ce int, mask BitMask, set bool) {
@@ -162,6 +206,12 @@ func (s *Sudoku) MaskString() string {
 	return buf.String()
 }
 
+func (s *Sudoku) fillBlank(r, c int, num int) {
+	s.remain--
+	s.data[r][c] = num
+	s.setMask(r, c, uint(num), false)
+}
+
 // 找到最近一个可以确定的数字
 func (s *Sudoku) fillOne(row, col *int) bool {
 	r, c := *row, *col
@@ -170,10 +220,13 @@ func (s *Sudoku) fillOne(row, col *int) bool {
 			if s.data[r][c] > 0 {
 				continue
 			}
-			pos := s.masks[r][c].OneBit()
-			if pos > 0 {
-				s.data[r][c] = pos
-				s.setMask(r, c, uint(pos), false)
+			mask := s.masks[r][c]
+			if mask.OneBit() {
+				num := mask.LowBit()
+				if num == 0 {
+					panic(fmt.Sprintf("invalid mask %s at (%d, %d)", mask.String(), r, c))
+				}
+				s.fillBlank(r, c, num)
 				*row = r
 				*col = c
 				return true
@@ -185,10 +238,95 @@ func (s *Sudoku) fillOne(row, col *int) bool {
 
 func (s *Sudoku) Resolve() error {
 	row, col := 0, 0
-	for {
-		if !s.fillOne(&row, &col) {
-			break
+	for s.fillOne(&row, &col) {
+	}
+	if s.remain == 0 {
+		return nil
+	}
+	tr := s.newTraverseResolver()
+	if tr.Resolve() == nil {
+		for _, r := range tr.Result() {
+			s.fillBlank(r.Row, r.Col, r.Num)
+		}
+		return nil
+	}
+	return errors.New("no solution")
+}
+
+type resolveResult struct {
+	Row int
+	Col int
+	Num int
+}
+
+// 遍历求解
+type traverseResolver struct {
+	numbers [sudoRows][]int
+	columns [sudoRows][]int
+	cmask   [sudoCols]BitMask // 每一列已经使用的数字
+	bmask   [9]BitMask        // 每个block已经使用的数字
+}
+
+func (tr *traverseResolver) traverse(r int) bool {
+	if r >= 9 {
+		return true
+	}
+	n := len(tr.columns[r]) // 这一行已经填满了
+	if n == 0 {
+		return tr.traverse(r + 1)
+	}
+	return tr.traverseRow(r, 0, len(tr.columns[r]))
+}
+
+func (tr *traverseResolver) traverseRow(r, b, e int) bool {
+	if b == e {
+		return tr.traverse(r + 1)
+	}
+	columns := tr.columns[r]
+	numbers := tr.numbers[r]
+	fmt.Printf("row %d range [%d, %d] numbers: %v\n", r, b, e, numbers)
+	for i := b; i < e; i++ {
+		c := columns[b] // 确定第b列应该填哪个数字
+		n := numbers[i]
+		m := BitMask(1) << uint(n)
+		block := getBlockByPos(r, c)
+		// 检查第i个number能否放倒(r, c)的位置
+		if tr.cmask[c].IsSet(m) || tr.bmask[block].IsSet(m) {
+			continue
+		}
+		fmt.Printf("number at[%d,%d]=%d, m=%s, cmask[%d]=%s, bmask[%d]=%s\n",
+			r, c, n, m.String(), c, tr.cmask[c].String(), block, tr.bmask[block].String())
+		tr.cmask[c].Set(m)
+		tr.bmask[block].Set(m)
+		numbers[b], numbers[i] = numbers[i], numbers[b]
+		if tr.traverseRow(r, b+1, e) {
+			return true
+		}
+		numbers[b], numbers[i] = numbers[i], numbers[b]
+		tr.cmask[c].Clear(m)
+		tr.bmask[block].Clear(m)
+	}
+	return false
+}
+
+func (tr *traverseResolver) Result() []*resolveResult {
+	result := []*resolveResult{}
+	for i := 0; i < 9; i++ {
+		for j := 0; j < len(tr.columns[i]); j++ {
+			r := &resolveResult{
+				Row: i,
+				Col: tr.columns[i][j],
+				Num: tr.numbers[i][j],
+			}
+			result = append(result, r)
 		}
 	}
-	return nil
+	return result
+}
+
+func (tr *traverseResolver) Resolve() error {
+	if tr.traverse(0) {
+		return nil
+	}
+	return errors.New("no solution")
 }
